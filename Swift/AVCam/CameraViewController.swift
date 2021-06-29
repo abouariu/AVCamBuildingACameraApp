@@ -225,14 +225,14 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
             
             // Choose the back dual camera, if available, otherwise default to a wide angle camera.
             
-            if let dualCameraDevice = AVCaptureDevice.default(.builtInDualCamera, for: .video, position: .back) {
+            if let backCameraDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
+                // If a rear dual wide camera is not available, default to the rear wide angle camera.
+                defaultVideoDevice = backCameraDevice
+            } else if let dualCameraDevice = AVCaptureDevice.default(.builtInDualCamera, for: .video, position: .back) {
                 defaultVideoDevice = dualCameraDevice
             } else if let dualWideCameraDevice = AVCaptureDevice.default(.builtInDualWideCamera, for: .video, position: .back) {
                 // If a rear dual camera is not available, default to the rear dual wide camera.
                 defaultVideoDevice = dualWideCameraDevice
-            } else if let backCameraDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
-                // If a rear dual wide camera is not available, default to the rear wide angle camera.
-                defaultVideoDevice = backCameraDevice
             } else if let frontCameraDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) {
                 // If the rear wide angle camera isn't available, default to the front wide angle camera.
                 defaultVideoDevice = frontCameraDevice
@@ -306,9 +306,12 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
             photoOutput.enabledSemanticSegmentationMatteTypes = photoOutput.availableSemanticSegmentationMatteTypes
             selectedSemanticSegmentationMatteTypes = photoOutput.availableSemanticSegmentationMatteTypes
             photoOutput.maxPhotoQualityPrioritization = .quality
-            livePhotoMode = photoOutput.isLivePhotoCaptureSupported ? .on : .off
-            depthDataDeliveryMode = photoOutput.isDepthDataDeliverySupported ? .on : .off
-            portraitEffectsMatteDeliveryMode = photoOutput.isPortraitEffectsMatteDeliverySupported ? .on : .off
+            livePhotoMode = .off // photoOutput.isLivePhotoCaptureSupported ? .on : .off
+            updateLivePhotoButtonAppearance()
+            depthDataDeliveryMode = .off // photoOutput.isDepthDataDeliverySupported ? .on : .off
+            updateDepthDataButtonAppearance()
+            portraitEffectsMatteDeliveryMode = .off // photoOutput.isPortraitEffectsMatteDeliverySupported ? .on : .off
+            updatePortraitEffectsMatteButtonAppearance()
             photoQualityPrioritizationMode = .balanced
             
         } else {
@@ -660,18 +663,28 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
         let videoPreviewLayerOrientation = previewView.videoPreviewLayer.connection?.videoOrientation
         
         sessionQueue.async {
+            
+            do {
+                let device = self.videoDeviceInput.device
+                try device.lockForConfiguration()
+                device.exposureMode = .locked
+                device.whiteBalanceMode = .locked
+                device.unlockForConfiguration()
+            } catch {
+                print("Error locking configuration: \(error)")
+            }
+            
             if let photoOutputConnection = self.photoOutput.connection(with: .video) {
                 photoOutputConnection.videoOrientation = videoPreviewLayerOrientation!
             }
-            var photoSettings = AVCapturePhotoSettings()
-            
-            // Capture HEIF photos when supported. Enable auto-flash and high-resolution photos.
-            if  self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
-                photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
-            }
+
+            let bracketedSettings = AVCaptureManualExposureBracketedStillImageSettings .manualExposureSettings(exposureDuration: CMTimeMake(value: 1, timescale: 50), iso: 100)
+            let photoSettings = AVCapturePhotoBracketSettings(rawPixelFormatType: 0,
+                                                              processedFormat: [AVVideoCodecKey: AVVideoCodecType.jpeg],
+                                                              bracketedSettings: [bracketedSettings])
             
             if self.videoDeviceInput.device.isFlashAvailable {
-                photoSettings.flashMode = .auto
+                photoSettings.flashMode = .off
             }
             
             photoSettings.isHighResolutionPhotoEnabled = true
@@ -776,14 +789,16 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
     @IBAction private func toggleLivePhotoMode(_ livePhotoModeButton: UIButton) {
         sessionQueue.async {
             self.livePhotoMode = (self.livePhotoMode == .on) ? .off : .on
-            let livePhotoMode = self.livePhotoMode
-            
-            DispatchQueue.main.async {
-                if livePhotoMode == .on {
-                    self.livePhotoModeButton.setImage(#imageLiteral(resourceName: "LivePhotoON"), for: [])
-                } else {
-                    self.livePhotoModeButton.setImage(#imageLiteral(resourceName: "LivePhotoOFF"), for: [])
-                }
+            self.updateLivePhotoButtonAppearance()
+        }
+    }
+    
+    private func updateLivePhotoButtonAppearance() {
+        DispatchQueue.main.async {
+            if self.livePhotoMode == .on {
+                self.livePhotoModeButton.setImage(#imageLiteral(resourceName: "LivePhotoON"), for: [])
+            } else {
+                self.livePhotoModeButton.setImage(#imageLiteral(resourceName: "LivePhotoOFF"), for: [])
             }
         }
     }
@@ -801,17 +816,20 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
             } else {
                 self.portraitEffectsMatteDeliveryMode = .off
             }
-            
-            DispatchQueue.main.async {
-                if depthDataDeliveryMode == .on {
-                    self.depthDataDeliveryButton.setImage(#imageLiteral(resourceName: "DepthON"), for: [])
-                    self.portraitEffectsMatteDeliveryButton.setImage(#imageLiteral(resourceName: "PortraitMatteON"), for: [])
-                    self.semanticSegmentationMatteDeliveryButton.isEnabled = true
-                } else {
-                    self.depthDataDeliveryButton.setImage(#imageLiteral(resourceName: "DepthOFF"), for: [])
-                    self.portraitEffectsMatteDeliveryButton.setImage(#imageLiteral(resourceName: "PortraitMatteOFF"), for: [])
-                    self.semanticSegmentationMatteDeliveryButton.isEnabled = false
-                }
+            self.updateDepthDataButtonAppearance()
+        }
+    }
+    
+    private func updateDepthDataButtonAppearance() {
+        DispatchQueue.main.async {
+            if self.depthDataDeliveryMode == .on {
+                self.depthDataDeliveryButton.setImage(#imageLiteral(resourceName: "DepthON"), for: [])
+                self.portraitEffectsMatteDeliveryButton.setImage(#imageLiteral(resourceName: "PortraitMatteON"), for: [])
+                self.semanticSegmentationMatteDeliveryButton.isEnabled = true
+            } else {
+                self.depthDataDeliveryButton.setImage(#imageLiteral(resourceName: "DepthOFF"), for: [])
+                self.portraitEffectsMatteDeliveryButton.setImage(#imageLiteral(resourceName: "PortraitMatteOFF"), for: [])
+                self.semanticSegmentationMatteDeliveryButton.isEnabled = false
             }
         }
     }
@@ -827,14 +845,16 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
             } else {
                 self.portraitEffectsMatteDeliveryMode = (self.depthDataDeliveryMode == .off) ? .off : .on
             }
-            let portraitEffectsMatteDeliveryMode = self.portraitEffectsMatteDeliveryMode
-            
-            DispatchQueue.main.async {
-                if portraitEffectsMatteDeliveryMode == .on {
-                    self.portraitEffectsMatteDeliveryButton.setImage(#imageLiteral(resourceName: "PortraitMatteON"), for: [])
-                } else {
-                    self.portraitEffectsMatteDeliveryButton.setImage(#imageLiteral(resourceName: "PortraitMatteOFF"), for: [])
-                }
+            self.updatePortraitEffectsMatteButtonAppearance()
+        }
+    }
+    
+    private func updatePortraitEffectsMatteButtonAppearance() {
+        DispatchQueue.main.async {
+            if self.portraitEffectsMatteDeliveryMode == .on {
+                self.portraitEffectsMatteDeliveryButton.setImage(#imageLiteral(resourceName: "PortraitMatteON"), for: [])
+            } else {
+                self.portraitEffectsMatteDeliveryButton.setImage(#imageLiteral(resourceName: "PortraitMatteOFF"), for: [])
             }
         }
     }
